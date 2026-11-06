@@ -1,0 +1,647 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Pick pixels - captured</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #1e1e1e;
+    --panel: #252526;
+    --line: #3c3c3c;
+    --fg: #d4d4d4;
+    --dim: #8b8b8b;
+    --accent: #e0109e;
+  }
+  * { box-sizing: border-box; }
+  html, body { height: 100%; margin: 0; }
+  body {
+    display: grid;
+    grid-template-columns: 240px minmax(0, 1fr);
+    grid-template-rows: 44px minmax(0, 1fr);
+    background: var(--bg);
+    color: var(--fg);
+    font: 13px/1.4 system-ui, -apple-system, sans-serif;
+  }
+  .dim { color: var(--dim); }
+  .mono { font: 12px ui-monospace, Menlo, monospace; }
+
+  header {
+    grid-column: 1 / -1;
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 0 12px;
+    white-space: nowrap;
+    background: var(--panel);
+    border-bottom: 1px solid var(--line);
+  }
+  header .spacer { flex: 1; }
+  #pos { min-width: 18ch; }
+  #status { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  #status.err { color: #f48771; }
+  .zoom { display: flex; align-items: center; gap: 4px; }
+  .zoom span { min-width: 3ch; text-align: center; }
+  button {
+    padding: 4px 10px;
+    border: 1px solid #555;
+    border-radius: 4px;
+    background: #3a3d41;
+    color: inherit;
+    font: inherit;
+    cursor: pointer;
+  }
+  button:disabled { opacity: .4; cursor: default; }
+  button.primary { background: #0e639c; border-color: #1177bb; }
+
+  aside {
+    overflow: auto;
+    padding: 4px 8px 12px;
+    background: var(--panel);
+    border-right: 1px solid var(--line);
+  }
+  aside h2 {
+    margin: 14px 8px 6px;
+    color: var(--dim);
+    font-size: 11px;
+    letter-spacing: .06em;
+  }
+  #images { max-height: 40vh; overflow: auto; }
+  #images button {
+    display: flex;
+    align-items: baseline;
+    gap: 8px;
+    width: 100%;
+    padding: 5px 8px;
+    border: 0;
+    background: none;
+    text-align: left;
+  }
+  #images button:hover { background: #2a2d2e; }
+  #images button[aria-current="true"] { background: #094771; }
+  #images small { color: var(--dim); }
+  #images em {
+    margin-left: auto;
+    padding: 0 6px;
+    border-radius: 9px;
+    background: #3a3d41;
+    font-size: 11px;
+    font-style: normal;
+  }
+  aside h2.row { display: flex; align-items: center; justify-content: space-between; }
+  aside h2.row button { padding: 1px 8px; font-size: 11px; letter-spacing: 0; }
+  #groups, #points { margin: 0; padding: 0; list-style: none; }
+  #groups { max-height: 30vh; overflow: auto; }
+  #groups li { display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-radius: 4px; cursor: pointer; }
+  #groups li:hover { background: #2a2d2e; }
+  #groups li[aria-current="true"] { background: #094771; }
+  #groups i { flex: none; width: 10px; height: 10px; border-radius: 50%; background: var(--c); box-shadow: 0 0 0 1px #fff; }
+  #groups .name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  #groups small { color: var(--dim); }
+  #groups input {
+    flex: 1;
+    min-width: 0;
+    padding: 1px 4px;
+    border: 1px solid #1177bb;
+    border-radius: 3px;
+    background: var(--bg);
+    color: inherit;
+    font: inherit;
+  }
+  #points li { display: flex; align-items: center; gap: 8px; padding: 1px 8px; }
+  #points b { width: 3ch; color: var(--c, var(--accent)); text-align: right; font-weight: 600; }
+  #points code { flex: 1; }
+  #groups button, #points button {
+    padding: 0 6px;
+    border: 0;
+    background: none;
+    color: var(--dim);
+    font-size: 16px;
+    line-height: 1.2;
+  }
+  #groups button:hover { color: var(--fg); }
+  #groups button[data-act="remove"]:hover, #points button:hover { color: #f48771; }
+  .hint { margin: 16px 8px 0; color: var(--dim); font-size: 12px; }
+
+  main { overflow: auto; padding: 16px; }
+  #stage {
+    position: relative;
+    width: max-content;
+    cursor: crosshair;
+    user-select: none;
+    -webkit-user-select: none;
+  }
+  #shot { display: block; max-width: none; image-rendering: pixelated; }
+  #marks { position: absolute; left: 0; top: 0; overflow: visible; pointer-events: none; }
+  .halo { fill: none; stroke: #fff; stroke-width: 3.5; }
+  .ring { fill: none; stroke: var(--c); stroke-width: 1.5; }
+  .cellbox { fill: none; stroke: var(--c); stroke-width: 1; }
+  #cell { position: absolute; pointer-events: none; outline: 1px solid #fff; box-shadow: 0 0 0 2px var(--c, #000); }
+  #marks text {
+    fill: var(--c);
+    stroke: #fff;
+    stroke-width: 3px;
+    paint-order: stroke;
+    font: 700 12px system-ui, sans-serif;
+  }
+</style>
+</head>
+<body>
+<header>
+  <strong id="title">Loading…</strong>
+  <span id="pos" class="mono dim">x: –, y: –</span>
+  <span class="spacer"></span>
+  <span id="status" role="status"></span>
+  <span class="zoom">
+    <button id="zoomOut" type="button" title="Zoom out (-)" aria-label="Zoom out" disabled>−</button>
+    <span id="zoomLabel" class="mono" title="Screen pixels per image pixel (1× = actual pixels)">1×</span>
+    <button id="zoomIn" type="button" title="Zoom in (+)" aria-label="Zoom in" disabled>+</button>
+  </span>
+  <button id="undo" type="button" disabled>Undo</button>
+  <button id="clear" type="button" title="Remove all points of the highlighted group" disabled>Clear</button>
+  <button id="load" type="button" title="Load a saved captured_data.json (⌘/Ctrl+O)" disabled>Load…</button>
+  <button id="save" type="button" class="primary" disabled>Save captured_data.json</button>
+  <input id="file" type="file" accept="application/json,.json" hidden>
+</header>
+
+<aside>
+  <h2>IMAGES</h2>
+  <div id="images"></div>
+  <h2 class="row">
+    <span id="groupsTitle">GROUPS</span>
+    <button id="addGroup" type="button" title="Add a group" disabled>+ New</button>
+  </h2>
+  <ul id="groups"></ul>
+  <h2 id="pointsTitle">POINTS</h2>
+  <ol id="points"></ol>
+  <p class="hint">
+    1× = actual pixels (1 image px = 1 screen px). Coordinates are original image pixels, origin (0, 0) at the top-left.<br>
+    Clicks add a point to the highlighted group.<br>
+    ← → image · + − zoom · Backspace undo · ⌘/Ctrl+S save · ⌘/Ctrl+O load
+  </p>
+</aside>
+
+<main id="viewport">
+  <div id="stage" hidden>
+    <img id="shot" alt="" draggable="false">
+    <svg id="marks" aria-hidden="true"></svg>
+    <div id="cell" hidden></div>
+  </div>
+  <p id="empty" class="dim" hidden>Expected captured/l_1.png, l_2.png, … next to this HTML file.</p>
+</main>
+
+<script>
+const OUT_NAME = 'captured_data.json';
+const ZOOMS = [1, 2, 3, 4, 6, 8]; // screen pixels per image pixel
+const COLORS = ['#e0109e', '#2979ff', '#00acc1', '#ff6d00', '#7c4dff', '#6d4c41', '#212121', '#607d8b'];
+const $ = id => document.getElementById(id);
+const esc = s => s.replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]);
+const images = []; // { key, src, w, h, groups: [{ name, color, points: [[x, y], ...] }], active }
+let current = -1;
+let zoom = 1;
+let lastDpr = devicePixelRatio;
+let pointer = null; // last pointer position over the stage, anchors keyboard zoom
+let dirty = false;
+let fileHandle = null;
+
+const cur = () => images[current];
+const activeGroup = () => cur()?.groups[cur().active];
+const total = im => im.groups.reduce((n, g) => n + g.points.length, 0);
+// CSS px per image px; zoom 1 puts every image pixel on exactly one screen pixel
+const scale = () => zoom / devicePixelRatio;
+
+function nextColor(im) {
+  return COLORS.find(c => !im.groups.some(g => g.color === c)) ?? COLORS[im.groups.length % COLORS.length];
+}
+
+function newGroup(im) {
+  let n = im.groups.length + 1;
+  while (im.groups.some(g => g.name === `group ${n}`)) n++;
+  const g = { name: `group ${n}`, color: nextColor(im), points: [] };
+  im.groups.push(g);
+  im.active = im.groups.length - 1;
+  dirty = true;
+  return g;
+}
+
+const probe = src => new Promise(resolve => {
+  const img = new Image();
+  img.onload = () => resolve(img);
+  img.onerror = () => resolve(null);
+  img.src = src;
+});
+
+async function discover() {
+  // rotate_captured.sh numbers files l_1.png..l_n.png without gaps, so stop at the first miss
+  for (let n = 1; ; n++) {
+    const src = `captured/l_${n}.png`;
+    const img = await probe(src);
+    if (!img) return;
+    images.push({ key: `l_${n}`, src, w: img.naturalWidth, h: img.naturalHeight, groups: [], active: -1 });
+  }
+}
+
+function setStatus(text, isError = false) {
+  $('status').textContent = text;
+  $('status').title = text;
+  $('status').className = isError ? 'err' : '';
+}
+
+function render() {
+  const im = cur();
+  const g = im.groups[im.active];
+  $('title').textContent = `${im.key}.png · ${im.w} × ${im.h} px · ${current + 1}/${images.length}`;
+  [...$('images').children].forEach((b, i) => {
+    b.setAttribute('aria-current', i === current);
+    b.querySelector('em').textContent = total(images[i]);
+  });
+  $('groupsTitle').textContent = `GROUPS · ${im.key}`;
+  $('groups').innerHTML = im.groups.map((gr, i) =>
+    `<li data-i="${i}" aria-current="${i === im.active}" style="--c:${gr.color}"><i></i>` +
+    `<span class="name" title="${esc(gr.name)}">${esc(gr.name)}</span><small>${gr.points.length}</small>` +
+    `<button type="button" data-act="rename" aria-label="Rename group">✎</button>` +
+    `<button type="button" data-act="remove" aria-label="Remove group">×</button></li>`
+  ).join('');
+  $('pointsTitle').textContent = g ? `POINTS · ${g.name}` : 'POINTS';
+  $('points').style.setProperty('--c', g ? g.color : '');
+  $('points').innerHTML = (g ? g.points : []).map(([x, y], i) =>
+    `<li><b>${i + 1}</b><code class="mono">${x}, ${y}</code>` +
+    `<button type="button" data-i="${i}" aria-label="Remove point ${i + 1}">×</button></li>`
+  ).join('');
+  const s = scale();
+  $('marks').innerHTML = im.groups.map(gr => gr.points.map(([x, y], i) => {
+    const cx = (x + 0.5) * s, cy = (y + 0.5) * s;
+    return `<g style="--c:${gr.color}"><circle class="halo" cx="${cx}" cy="${cy}" r="6"/><circle class="ring" cx="${cx}" cy="${cy}" r="6"/>` +
+      `<rect class="cellbox" x="${x * s}" y="${y * s}" width="${s}" height="${s}"/>` +
+      `<text x="${cx + 9}" y="${cy - 7}">${i + 1}</text></g>`;
+  }).join('')).join('');
+  $('undo').disabled = $('clear').disabled = !(g && g.points.length);
+  if (dirty) setStatus('Unsaved changes');
+}
+
+function layout() {
+  const im = cur();
+  const w = im.w * scale(), h = im.h * scale();
+  $('shot').style.width = `${w}px`;
+  $('shot').style.height = `${h}px`;
+  const marks = $('marks');
+  marks.setAttribute('width', w);
+  marks.setAttribute('height', h);
+  marks.setAttribute('viewBox', `0 0 ${w} ${h}`);
+  $('zoomLabel').textContent = `${zoom}×`;
+  $('zoomOut').disabled = zoom === ZOOMS[0];
+  $('zoomIn').disabled = zoom === ZOOMS[ZOOMS.length - 1];
+}
+
+function hover(p) {
+  const [x, y] = pixelAt(p);
+  const s = scale();
+  const im = cur();
+  const g = im.groups[im.active];
+  $('pos').textContent = `x: ${x}, y: ${y}`;
+  const cell = $('cell');
+  cell.hidden = false;
+  cell.style.cssText = `left:${x * s}px;top:${y * s}px;width:${s}px;height:${s}px;--c:${g ? g.color : nextColor(im)}`;
+}
+
+function select(i) {
+  const next = Math.min(Math.max(i, 0), images.length - 1);
+  if (next === current) return;
+  current = next;
+  const im = cur();
+  $('shot').alt = im.key;
+  $('shot').src = im.src;
+  layout();
+  $('viewport').scrollTo(0, 0);
+  render();
+  if (pointer) hover(pointer);
+}
+
+function stepZoom(dir) {
+  const next = ZOOMS[ZOOMS.indexOf(zoom) + dir];
+  if (!next || !cur()) return;
+  const main = $('viewport');
+  const m = main.getBoundingClientRect();
+  const ax = pointer ? pointer.clientX : m.left + m.width / 2;
+  const ay = pointer ? pointer.clientY : m.top + m.height / 2;
+  const before = $('stage').getBoundingClientRect();
+  const fx = (ax - before.left) / before.width;
+  const fy = (ay - before.top) / before.height;
+  zoom = next;
+  layout();
+  // Keep the image point that was under the anchor in place
+  const after = $('stage').getBoundingClientRect();
+  main.scrollLeft += after.left + fx * after.width - ax;
+  main.scrollTop += after.top + fy * after.height - ay;
+  render();
+  if (pointer) hover(pointer);
+}
+
+function pixelAt(e) {
+  const im = cur();
+  const r = $('stage').getBoundingClientRect();
+  const clamp = (v, max) => Math.min(Math.max(Math.floor(v), 0), max - 1);
+  return [
+    clamp((e.clientX - r.left) * im.w / r.width, im.w),
+    clamp((e.clientY - r.top) * im.h / r.height, im.h),
+  ];
+}
+
+function undo() {
+  const g = activeGroup();
+  if (!g || !g.points.length) return;
+  g.points.pop();
+  dirty = true;
+  render();
+}
+
+function selectGroup(i) {
+  cur().active = i;
+  render();
+}
+
+function removeGroup(i) {
+  const im = cur();
+  const g = im.groups[i];
+  if (g.points.length && !confirm(`Remove group "${g.name}" and its ${g.points.length} points?`)) return;
+  im.groups.splice(i, 1);
+  im.active = Math.min(im.active > i ? im.active - 1 : im.active, im.groups.length - 1);
+  dirty = true;
+  render();
+}
+
+function startRename(i) {
+  const im = cur();
+  const g = im.groups[i];
+  const span = $('groups').children[i].querySelector('.name');
+  const input = document.createElement('input');
+  input.value = g.name;
+  span.replaceWith(input);
+  input.focus();
+  input.select();
+  let cancelled = false;
+  input.addEventListener('keydown', e => {
+    if (e.isComposing || e.keyCode === 229) return;
+    if (e.key === 'Enter') input.blur();
+    else if (e.key === 'Escape') {
+      cancelled = true;
+      input.blur();
+    }
+  });
+  // Update the row in place: a full render here would swallow the click that caused the blur
+  input.addEventListener('blur', () => {
+    const name = input.value.trim();
+    if (!cancelled && name && name !== g.name) {
+      if (im.groups.some(o => o !== g && o.name === name)) {
+        setStatus(`"${name}" is already used in ${im.key}`, true);
+      } else {
+        g.name = name;
+        dirty = true;
+        setStatus('Unsaved changes');
+      }
+    }
+    span.textContent = g.name;
+    span.title = g.name;
+    input.replaceWith(span);
+    if (cur() === im && im.groups[im.active] === g) $('pointsTitle').textContent = `POINTS · ${g.name}`;
+  }, { once: true });
+}
+
+function serialize() {
+  const rows = images.map(({ key, groups }) => {
+    const body = groups.map(({ name, points }) => {
+      const pts = points.map(([x, y]) => `      [${x}, ${y}]`).join(',\n');
+      return `    ${JSON.stringify(name)}: ${points.length ? `[\n${pts}\n    ]` : '[]'}`;
+    });
+    return `  ${JSON.stringify(key)}: ${body.length ? `{\n${body.join(',\n')}\n  }` : '{}'}`;
+  });
+  return `{\n${rows.join(',\n')}\n}\n`;
+}
+
+async function save() {
+  const text = serialize();
+  try {
+    if (window.showSaveFilePicker) {
+      fileHandle ??= await showSaveFilePicker({
+        id: 'captured-data',
+        suggestedName: OUT_NAME,
+        types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+      });
+      const w = await fileHandle.createWritable();
+      await w.write(text);
+      await w.close();
+      setStatus(`Saved ${fileHandle.name}`);
+    } else {
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(new Blob([text], { type: 'application/json' }));
+      a.download = OUT_NAME;
+      document.body.append(a);
+      a.click();
+      a.remove();
+      setTimeout(() => URL.revokeObjectURL(a.href), 1000);
+      setStatus(`Downloaded ${OUT_NAME} - move it into the project folder`);
+    }
+    dirty = false;
+  } catch (err) {
+    fileHandle = null;
+    if (err.name === 'AbortError') setStatus('Save cancelled');
+    else setStatus(`Save failed: ${err.message}`, true);
+  }
+}
+
+const isPoint = (p, im) => Array.isArray(p) && p.length === 2 &&
+  Number.isInteger(p[0]) && Number.isInteger(p[1]) &&
+  p[0] >= 0 && p[0] < im.w && p[1] >= 0 && p[1] < im.h;
+
+// Validates a parsed file against the current images without touching any state
+function parseData(data) {
+  if (!data || typeof data !== 'object' || Array.isArray(data)) {
+    throw new Error('expected an object keyed by image name');
+  }
+  let dropped = 0;
+  let legacy = false;
+  const loaded = images.map(im => {
+    const value = data[im.key];
+    const groups = [];
+    if (value === undefined) return groups;
+    if (value === null || typeof value !== 'object') throw new Error(`${im.key} must be an object of groups`);
+    // Older files kept one flat point list per image
+    const flat = Array.isArray(value);
+    legacy ||= flat && value.length > 0;
+    const entries = flat ? (value.length ? [['group 1', value]] : []) : Object.entries(value);
+    for (const [name, pts] of entries) {
+      if (!Array.isArray(pts)) throw new Error(`${im.key} / ${name} must be an array of [x, y] points`);
+      const points = pts.filter(p => isPoint(p, im));
+      dropped += pts.length - points.length;
+      groups.push({ name, color: nextColor({ groups }), points });
+    }
+    return groups;
+  });
+  const ignored = Object.keys(data).filter(k => !images.some(im => im.key === k));
+  return { loaded, dropped, ignored, legacy };
+}
+
+function adopt(data, name, handle) {
+  const { loaded, dropped, ignored, legacy } = parseData(data);
+  if (dirty && !confirm(`Replace the unsaved changes with ${name}?`)) return;
+  images.forEach((im, i) => {
+    im.groups = loaded[i];
+    im.active = loaded[i].length ? 0 : -1;
+  });
+  fileHandle = handle;
+  dirty = false;
+  render();
+  if (pointer) hover(pointer);
+  const notes = [];
+  if (legacy) notes.push('old format, points put in "group 1"');
+  if (ignored.length) notes.push(`ignored ${ignored.join(', ')}: no such image`);
+  if (dropped) notes.push(`dropped ${dropped} invalid or out-of-bounds point${dropped > 1 ? 's' : ''}`);
+  const count = images.reduce((n, im) => n + total(im), 0);
+  const summary = `${count} point${count === 1 ? '' : 's'}${notes.length ? ` (${notes.join('; ')})` : ''}`;
+  setStatus(`Loaded ${name}: ${summary}`, dropped > 0 || ignored.length > 0);
+}
+
+async function loadFile(file, handle) {
+  try {
+    adopt(JSON.parse(await file.text()), file.name, handle);
+  } catch (err) {
+    setStatus(`Load failed: ${err.message}`, true);
+  }
+}
+
+async function load() {
+  if (!window.showOpenFilePicker) {
+    $('file').click();
+    return;
+  }
+  try {
+    const [handle] = await showOpenFilePicker({
+      id: 'captured-data',
+      types: [{ description: 'JSON', accept: { 'application/json': ['.json'] } }],
+    });
+    await loadFile(await handle.getFile(), handle);
+  } catch (err) {
+    if (err.name !== 'AbortError') setStatus(`Load failed: ${err.message}`, true);
+  }
+}
+
+$('stage').addEventListener('pointermove', e => {
+  pointer = { clientX: e.clientX, clientY: e.clientY };
+  hover(pointer);
+});
+$('stage').addEventListener('pointerleave', () => {
+  pointer = null;
+  $('cell').hidden = true;
+  $('pos').textContent = 'x: –, y: –';
+});
+// pointerup, not click: click coordinates are truncated to whole CSS px, pointer events keep the fraction
+$('stage').addEventListener('pointerup', e => {
+  if (e.button !== 0) return;
+  const im = cur();
+  (im.groups[im.active] ?? newGroup(im)).points.push(pixelAt(e));
+  dirty = true;
+  render();
+});
+$('zoomOut').addEventListener('click', () => stepZoom(-1));
+$('zoomIn').addEventListener('click', () => stepZoom(1));
+
+$('images').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (b) select(+b.dataset.i);
+});
+$('groups').addEventListener('click', e => {
+  const li = e.target.closest('li');
+  if (!li || e.target.closest('input')) return;
+  const i = +li.dataset.i;
+  const act = e.target.closest('button')?.dataset.act;
+  if (act === 'remove') {
+    removeGroup(i);
+  } else {
+    selectGroup(i);
+    if (act === 'rename') startRename(i);
+  }
+});
+$('addGroup').addEventListener('click', () => {
+  const im = cur();
+  newGroup(im);
+  render();
+  startRename(im.active);
+});
+$('points').addEventListener('click', e => {
+  const b = e.target.closest('button');
+  if (!b) return;
+  activeGroup().points.splice(+b.dataset.i, 1);
+  dirty = true;
+  render();
+});
+
+$('undo').addEventListener('click', undo);
+$('clear').addEventListener('click', () => {
+  const g = activeGroup();
+  if (!g || !g.points.length || !confirm(`Remove all ${g.points.length} points of "${g.name}"?`)) return;
+  g.points.length = 0;
+  dirty = true;
+  render();
+});
+$('save').addEventListener('click', save);
+$('load').addEventListener('click', load);
+$('file').addEventListener('change', () => {
+  const [file] = $('file').files;
+  $('file').value = '';
+  if (file) loadFile(file, null);
+});
+
+addEventListener('keydown', e => {
+  if (!images.length) return;
+  const mod = e.metaKey || e.ctrlKey;
+  const k = e.key.toLowerCase();
+  if (mod && (k === 's' || k === 'o')) {
+    document.activeElement.blur(); // commits a group name that is still being typed
+    (k === 's' ? save : load)();
+  } else if (e.target.tagName === 'INPUT') return;
+  else if ((mod && k === 'z') || k === 'backspace') undo();
+  else if (!mod && k === 'arrowleft') select(current - 1);
+  else if (!mod && k === 'arrowright') select(current + 1);
+  else if (!mod && (k === '+' || k === '=')) stepZoom(1);
+  else if (!mod && (k === '-' || k === '_')) stepZoom(-1);
+  else return;
+  e.preventDefault();
+});
+
+addEventListener('resize', () => {
+  if (!cur() || devicePixelRatio === lastDpr) return;
+  lastDpr = devicePixelRatio;
+  layout();
+  render();
+});
+
+addEventListener('beforeunload', e => {
+  if (dirty) {
+    e.preventDefault();
+    e.returnValue = '';
+  }
+});
+
+(async () => {
+  await discover();
+  if (!images.length) {
+    $('title').textContent = 'No images found';
+    $('empty').hidden = false;
+    return;
+  }
+  $('images').replaceChildren(...images.map((im, i) => {
+    const b = document.createElement('button');
+    b.type = 'button';
+    b.dataset.i = i;
+    b.innerHTML = `${im.key}<small>${im.w}×${im.h}</small><em>0</em>`;
+    return b;
+  }));
+  $('stage').hidden = false;
+  $('save').disabled = false;
+  $('load').disabled = false;
+  $('addGroup').disabled = false;
+  select(0);
+})();
+</script>
+</body>
+</html>

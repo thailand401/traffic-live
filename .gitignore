@@ -1,0 +1,7 @@
+.DS_Store
+.venv/
+__pycache__/
+
+# Screenshots rotated in by rotate_captured.sh and debug overlays
+captured/
+temp/
