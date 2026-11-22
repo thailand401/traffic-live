@@ -10,7 +10,7 @@ tính là xanh. Tình trạng group (luật đúng đầu tiên thắng):
   4. đỏ + đỏ đậm >= xanh + vàng, có đỏ đậm           -> ùn tắc nặng
   5. đỏ + đỏ đậm >= xanh + vàng, không đỏ đậm        -> ùn tắc
   6. còn lại (có đỏ nhưng xanh + vàng vẫn nhiều hơn) -> ùn tắc nhẹ
-Ảnh đọc từ captured/<key>.png cạnh script.
+Ảnh đọc từ ../screenshot/<key>.png (ngoài folder traffic-live).
 
 Cần Pillow: pip install pillow
 """
@@ -18,7 +18,10 @@ Cần Pillow: pip install pillow
 import argparse
 import json
 import math
+import os
 import sys
+import urllib.error
+import urllib.request
 from pathlib import Path
 
 try:
@@ -28,7 +31,7 @@ except ImportError:
 
 ROOT = Path(__file__).resolve().parent
 LEGEND_PNG = ROOT / "traffic_defined.png"
-CAPTURED_DIR = ROOT / "captured"
+CAPTURED_DIR = ROOT.parent / "screenshot"
 
 # Same order as the swatches in traffic_defined.png, left (Fast) to right (Slow)
 COLORS = ["xanh", "vàng", "đỏ", "đỏ đậm"]
@@ -97,20 +100,63 @@ def warn(msg):
     print(f"Cảnh báo: {msg}", file=sys.stderr)
 
 
+def load_data(arg):
+    """arg là chuỗi JSON, '-' (đọc stdin) hoặc đường dẫn file JSON."""
+    if arg == "-":
+        text = sys.stdin.read()
+    elif arg.lstrip().startswith("{"):
+        text = arg
+    else:
+        path = Path(arg)
+        if not path.is_file():
+            sys.exit(f"Không tìm thấy {path}")
+        text = path.read_text(encoding="utf-8")
+    try:
+        return json.loads(text)
+    except json.JSONDecodeError as e:
+        sys.exit(f"JSON không hợp lệ: {e}")
+
+
+def post_result(url, payload):
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    req = urllib.request.Request(url, data=body, method="POST",
+                                 headers={"Content-Type": "application/json; charset=utf-8"})
+    try:
+        with urllib.request.urlopen(req, timeout=30) as resp:
+            print(f"POST {url} -> {resp.status}", file=sys.stderr)
+            return True
+    except (urllib.error.URLError, OSError) as e:
+        print(f"POST {url} thất bại: {e}", file=sys.stderr)
+        return False
+
+
 def main():
     ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    ap.add_argument("data", nargs="?", type=Path, default=ROOT / "captured_data.json",
-                    help="file JSON tọa độ (mặc định: captured_data.json)")
+    ap.add_argument("data", nargs="?", default=str(ROOT / "captured_data.json"),
+                    help="chuỗi JSON, '-' (stdin) hoặc file JSON (mặc định: captured_data.json)")
+    ap.add_argument("--api", default=os.environ.get("LIVE_TRAFFIC_API", "https://thordang-mcp-orchestrator.hf.space/vinfast/api/live-traffic"),
+                    help="URL API nhận kết quả (mặc định: $LIVE_TRAFFIC_API hoặc https://thordang-mcp-orchestrator.hf.space/vinfast/api/live-traffic)")
+    ap.add_argument("--no-post", action="store_true", help="không gọi API sau khi detect")
     ap.add_argument("-v", "--verbose", action="store_true", help="in thêm màu đo được tại từng tọa độ")
     args = ap.parse_args()
 
-    if not args.data.is_file():
-        sys.exit(f"Không tìm thấy {args.data}")
     legend = load_legend(LEGEND_PNG)
-    data = json.loads(args.data.read_text(encoding="utf-8"))
+    data = load_data(args.data)
+    # Record format: {"name": "C1", "data": {group: points}, "current_status": {...}} (or a list of them)
+    if isinstance(data, list) or "data" in data:
+        records = data if isinstance(data, list) else [data]
+        cameras = [(r["name"], r.get("data") or {}, r) for r in records]
+    else:
+        data.pop("current_status", None)
+        records = None
+        cameras = [(k, g, None) for k, g in data.items()]
+    current_status = {}
 
     failed = False
-    for i, (key, groups) in enumerate(data.items()):
+    for i, (key, groups, record) in enumerate(cameras):
+        current_status[key] = {}
+        if record is not None:
+            record["current_status"] = current_status[key]
         if i:
             print()
         print(f"[{key}]")
@@ -140,11 +186,26 @@ def main():
                 details.append(f"  ({x}, {y}) rgb{color} -> {label} (cách {dist:.1f})")
 
             status = group_status(votes) if votes else "không xác định"
+            current_status[key][name] = status
             print(f"{name} có tình trạng {status}")
             if args.verbose:
                 print("  " + " | ".join(f"{c} {votes.count(i)}" for i, c in enumerate(COLORS)))
                 for line in details:
                     print(line)
+
+    if records is None:
+        data["current_status"] = current_status
+        payloads = [data]
+    else:
+        # Existing records only need id + current_status; updated_at is set by the server
+        payloads = [{"id": r["id"], "current_status": r["current_status"]} if r.get("id")
+                    else {k: v for k, v in r.items() if k != "updated_at"} for r in records]
+    if not args.no_post:
+        for payload in payloads:
+            if not post_result(args.api, payload):
+                failed = True
+            if args.verbose:
+                print(json.dumps(payload, ensure_ascii=False))
 
     return 1 if failed else 0
 

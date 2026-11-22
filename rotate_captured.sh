@@ -2,7 +2,7 @@
 set -euo pipefail
 
 dir='/Users/thodang/Pictures/Snagit/live'
-captured="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)/captured"
+captured="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/screenshot"
 
 if [[ ! -d $dir ]]; then
   echo "Source dir not found: $dir" >&2
@@ -18,5 +18,5 @@ ls -1tr "$dir" | while IFS= read -r name; do
   # Not ((i++)): it returns 1 when i is 0 and trips set -e
   i=$((i + 1))
   # One mv renames and moves, so an unprocessed source l_*.png is never overwritten
-  mv -f -- "$dir/$name" "$captured/l_$i.png"
+  mv -f -- "$dir/$name" "$captured/C$i.png"
 done

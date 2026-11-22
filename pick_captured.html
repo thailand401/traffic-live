@@ -160,7 +160,9 @@
   <button id="undo" type="button" disabled>Undo</button>
   <button id="clear" type="button" title="Remove all points of the highlighted group" disabled>Clear</button>
   <button id="load" type="button" title="Load a saved captured_data.json (⌘/Ctrl+O)" disabled>Load…</button>
-  <button id="save" type="button" class="primary" disabled>Save captured_data.json</button>
+  <button id="save" type="button" disabled>Save captured_data.json</button>
+  <button id="apiLoad" type="button" title="Reload all records from the API" disabled>Reload API</button>
+  <button id="apiSave" type="button" class="primary" title="POST every image record to the API (⌘/Ctrl+Shift+S)" disabled>Save online</button>
   <input id="file" type="file" accept="application/json,.json" hidden>
 </header>
 
@@ -187,11 +189,13 @@
     <svg id="marks" aria-hidden="true"></svg>
     <div id="cell" hidden></div>
   </div>
-  <p id="empty" class="dim" hidden>Expected captured/l_1.png, l_2.png, … next to this HTML file.</p>
+  <p id="empty" class="dim" hidden>Expected ../screenshot/C1.png, C2.png, … next to this HTML file.</p>
 </main>
 
 <script>
 const OUT_NAME = 'captured_data.json';
+const API = 'https://thordang-mcp-orchestrator.hf.space/vinfast/api/live-traffic';
+const records = {}; // image key (record name: C1, C2, ...) -> DB record { id, name, data, lat, long, current_status, ... }
 const ZOOMS = [1, 2, 3, 4, 6, 8]; // screen pixels per image pixel
 const COLORS = ['#e0109e', '#2979ff', '#00acc1', '#ff6d00', '#7c4dff', '#6d4c41', '#212121', '#607d8b'];
 const $ = id => document.getElementById(id);
@@ -232,12 +236,12 @@ const probe = src => new Promise(resolve => {
 });
 
 async function discover() {
-  // rotate_captured.sh numbers files l_1.png..l_n.png without gaps, so stop at the first miss
+  // rotate_captured.sh numbers files C1.png..Cn.png without gaps, so stop at the first miss
   for (let n = 1; ; n++) {
-    const src = `captured/l_${n}.png`;
+    const src = `../screenshot/C${n}.png`;
     const img = await probe(src);
     if (!img) return;
-    images.push({ key: `l_${n}`, src, w: img.naturalWidth, h: img.naturalHeight, groups: [], active: -1 });
+    images.push({ key: `C${n}`, src, w: img.naturalWidth, h: img.naturalHeight, groups: [], active: -1 });
   }
 }
 
@@ -245,6 +249,23 @@ function setStatus(text, isError = false) {
   $('status').textContent = text;
   $('status').title = text;
   $('status').className = isError ? 'err' : '';
+}
+
+function statusOf(im, g) {
+  let s = records[im.key]?.current_status;
+  if (typeof s === 'string') {
+    try { s = JSON.parse(s); } catch {}
+  }
+  if (s == null || s === '') return '';
+  if (typeof s !== 'object') return String(s);
+  // { "<group name>": "<status>" }: prefer the highlighted group's status, else the first value
+  const v = (g && s[g.name] != null) ? s[g.name] : Object.values(s)[0];
+  return v == null || typeof v === 'object' ? '' : String(v);
+}
+
+function pointsTitle(im, g) {
+  const status = statusOf(im, g);
+  return ['POINTS', g?.name].filter(Boolean).join(' · ') + (status ? ` - ${status}` : '');
 }
 
 function render() {
@@ -262,7 +283,7 @@ function render() {
     `<button type="button" data-act="rename" aria-label="Rename group">✎</button>` +
     `<button type="button" data-act="remove" aria-label="Remove group">×</button></li>`
   ).join('');
-  $('pointsTitle').textContent = g ? `POINTS · ${g.name}` : 'POINTS';
+  $('pointsTitle').textContent = pointsTitle(im, g);
   $('points').style.setProperty('--c', g ? g.color : '');
   $('points').innerHTML = (g ? g.points : []).map(([x, y], i) =>
     `<li><b>${i + 1}</b><code class="mono">${x}, ${y}</code>` +
@@ -403,7 +424,7 @@ function startRename(i) {
     span.textContent = g.name;
     span.title = g.name;
     input.replaceWith(span);
-    if (cur() === im && im.groups[im.active] === g) $('pointsTitle').textContent = `POINTS · ${g.name}`;
+    if (cur() === im && im.groups[im.active] === g) $('pointsTitle').textContent = pointsTitle(im, g);
   }, { once: true });
 }
 
@@ -501,6 +522,66 @@ function adopt(data, name, handle) {
   setStatus(`Loaded ${name}: ${summary}`, dropped > 0 || ignored.length > 0);
 }
 
+const groupsOf = im => Object.fromEntries(im.groups.map(g => [g.name, g.points]));
+
+async function apiLoad() {
+  setStatus('Loading from API…');
+  try {
+    const res = await fetch(API);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const list = await res.json();
+    const data = {};
+    for (const rec of Array.isArray(list) ? list : []) {
+      if (!rec?.name) continue;
+      records[rec.name] = rec;
+      data[rec.name] = rec.data && typeof rec.data === 'object' ? rec.data : {};
+    }
+    adopt(data, 'API', fileHandle);
+  } catch (err) {
+    setStatus(`API load failed: ${err.message}`, true);
+  }
+}
+
+async function apiSave() {
+  document.activeElement?.blur();
+  setStatus('Saving to API…');
+  const failed = [];
+  const skipped = [];
+  let saved = 0;
+  for (const im of images) {
+    // Only update records that already exist in the DB: id + name are the keys, never create new ones
+    const rec = records[im.key];
+    if (!rec || rec.id == null || rec.name !== im.key) {
+      skipped.push(im.key);
+      continue;
+    }
+    const body = { ...rec, id: rec.id, name: rec.name, data: groupsOf(im) };
+    delete body.updated_at;
+    try {
+      const res = await fetch(API, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body),
+      });
+      if (!res.ok) throw new Error(`HTTP ${res.status}`);
+      const out = await res.json().catch(() => null);
+      records[im.key] = out && typeof out === 'object' && out.id === rec.id && out.name === im.key
+        ? out
+        : { ...rec, data: body.data };
+      saved++;
+    } catch (err) {
+      failed.push(`${im.key} (${err.message})`);
+    }
+  }
+  const skipNote = skipped.length ? `; skipped ${skipped.join(', ')}: no record in DB` : '';
+  if (failed.length) {
+    setStatus(`API save failed: ${failed.join(', ')}${skipNote}`, true);
+  } else {
+    dirty = false;
+    setStatus(`Saved ${saved} record${saved === 1 ? '' : 's'} to API${skipNote}`, skipped.length > 0);
+  }
+}
+
 async function loadFile(file, handle) {
   try {
     adopt(JSON.parse(await file.text()), file.name, handle);
@@ -585,6 +666,8 @@ $('clear').addEventListener('click', () => {
 });
 $('save').addEventListener('click', save);
 $('load').addEventListener('click', load);
+$('apiLoad').addEventListener('click', apiLoad);
+$('apiSave').addEventListener('click', apiSave);
 $('file').addEventListener('change', () => {
   const [file] = $('file').files;
   $('file').value = '';
@@ -597,7 +680,7 @@ addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   if (mod && (k === 's' || k === 'o')) {
     document.activeElement.blur(); // commits a group name that is still being typed
-    (k === 's' ? save : load)();
+    (k === 's' ? (e.shiftKey ? apiSave : save) : load)();
   } else if (e.target.tagName === 'INPUT') return;
   else if ((mod && k === 'z') || k === 'backspace') undo();
   else if (!mod && k === 'arrowleft') select(current - 1);
@@ -640,7 +723,10 @@ addEventListener('beforeunload', e => {
   $('save').disabled = false;
   $('load').disabled = false;
   $('addGroup').disabled = false;
+  $('apiLoad').disabled = false;
+  $('apiSave').disabled = false;
   select(0);
+  await apiLoad();
 })();
 </script>
 </body>
