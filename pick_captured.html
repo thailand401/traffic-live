@@ -259,7 +259,9 @@ function statusOf(im, g) {
   if (s == null || s === '') return '';
   if (typeof s !== 'object') return String(s);
   // { "<group name>": "<status>" }: prefer the highlighted group's status, else the first value
-  const v = (g && s[g.name] != null) ? s[g.name] : Object.values(s)[0];
+  let v = (g && s[g.name] != null) ? s[g.name] : Object.values(s)[0];
+  // New shape: { "<group name>": { label: "<status>", data: [...] } }
+  if (v && typeof v === 'object') v = v.label;
   return v == null || typeof v === 'object' ? '' : String(v);
 }
 

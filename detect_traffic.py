@@ -40,7 +40,7 @@ COLORS = ["xanh", "vàng", "đỏ", "đỏ đậm"]
 MAX_DISTANCE = 70
 
 # Bare road surface (no traffic line) counts as xanh; beige land and grey buildings are ~40+ away
-GREY = (203, 211, 220)
+GREYS = [(203, 211, 220), (0xBA, 0xC8, 0xD6)]  # road grey, #bac8d6
 GREY_DISTANCE = 25
 
 
@@ -72,12 +72,12 @@ def nearest(color, legend):
 
 def classify(color, legend):
     """(level, label, distance); level is None when the colour is neither a legend colour nor road grey."""
+    grey = min(math.dist(color, ref) for ref in GREYS)
+    if grey <= GREY_DISTANCE:
+        return 0, "xám (tính là xanh)", grey
     level, dist = nearest(color, legend)
     if dist <= MAX_DISTANCE:
         return level, COLORS[level], dist
-    grey = math.dist(color, GREY)
-    if grey <= GREY_DISTANCE:
-        return 0, "xám (tính là xanh)", grey
     return None, "không khớp", dist
 
 
@@ -186,7 +186,10 @@ def main():
                 details.append(f"  ({x}, {y}) rgb{color} -> {label} (cách {dist:.1f})")
 
             status = group_status(votes) if votes else "không xác định"
-            current_status[key][name] = status
+            current_status[key][name] = {
+                "label": status,
+                "data": [votes.count(i) for i in range(len(COLORS))],
+            }
             print(f"{name} có tình trạng {status}")
             if args.verbose:
                 print("  " + " | ".join(f"{c} {votes.count(i)}" for i, c in enumerate(COLORS)))
